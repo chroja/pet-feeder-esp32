@@ -1,3 +1,6 @@
+/*
+
+
 // ESP32 - skenování WiFi sítí v okolí
 
 // připojení potřebné knihovny
@@ -44,3 +47,5 @@ void loop() {
   // pauza před novým skenováním
   delay(1000);
 }
+
+*/

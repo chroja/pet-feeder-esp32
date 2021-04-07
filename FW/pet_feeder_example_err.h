@@ -4,6 +4,7 @@
  * Written by: Usman Ali Butt
  * Property off: microcontroller-project.com
  * ***************************************************/
+/*
 #include "WiFi.h"
  
 const char* ssid = "Asus 2,4GHz_RPT";
@@ -115,3 +116,4 @@ void loop() {
   Serial.println("");
  
 }
+/*
