@@ -6,9 +6,10 @@
 #include "DRV8825.h" //https://github.com/laurb9/StepperDriver
  
 const char* ssid = "Asus 2,4GHz";
-const char* password = "xxx";
+const char* password = "cirozjundrova";
 
 //pin
+const int LED = 2;
 const int BTN = 4;
 const int BEEPER = 16;
 const int MODE0 = 17;
@@ -39,7 +40,10 @@ WebServer server(80);
 
 void zpravaHlavni() {
     String zprava;
-    zprava += "<a href=\"/feed\"\">FEED</a><br><br>";
+    zprava += "<!DOCTYPE html><html>";
+    zprava += "<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
+    zprava += "<body><h1><a href=\"/feed\"\">FEED</a></h1><br><br>";
+    zprava += "</body></html>";
     
     // vytištění zprávy se statusem 200 - OK
     server.send(200, "text/html", zprava);
@@ -65,6 +69,7 @@ void zpravaNeznamy() {
 void setup (){
     Serial.begin(115200);
     Serial.println("\nSetup begin\n\n");
+    pinMode(LED, OUTPUT);
     pinMode(BTN,  INPUT_PULLUP);
     pinMode(BEEPER,  OUTPUT);
     pinMode(MODE0,  OUTPUT);
@@ -92,7 +97,7 @@ void setup (){
     }
     server.on("/", zpravaHlavni);
     server.on("/feed", []() {
-                FEED = true;
+        FEED = true;
         Serial.println("feed turned on");
         // vytištění hlavní stránky
         zpravaHlavni();
@@ -153,11 +158,13 @@ void Feed (){
     }
     DEG_FOR_FEED = random(DEG_FOR_FEED_MIN, DEG_FOR_FEED_MAX);
     Serial.println("Degrees for feed: " + String(DEG_FOR_FEED) + "°");
+    digitalWrite(LED, HIGH);
     stepper.enable();
     stepper.rotate(DEG_FOR_FEED); 
     delay(300);
     stepper.rotate(-DEG_FOR_RETRACTION);
     stepper.disable();
+    digitalWrite(LED, LOW);
     FEED = false;
     Serial.println("Feed end\n\n");
 }
