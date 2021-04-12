@@ -6,10 +6,14 @@
 #include "DRV8825.h" //https://github.com/laurb9/StepperDriver
  
 const char* ssid = "Asus 2,4GHz";
-const char* password = "cirozjundrova";
+const char* password = "---";
+
+#define USE_LED
 
 //pin
-const int LED = 2;
+#ifdef USE_LED
+    const int LED = 2;
+#endif
 const int BTN = 4;
 const int BEEPER = 16;
 const int MODE0 = 17;
@@ -158,13 +162,17 @@ void Feed (){
     }
     DEG_FOR_FEED = random(DEG_FOR_FEED_MIN, DEG_FOR_FEED_MAX);
     Serial.println("Degrees for feed: " + String(DEG_FOR_FEED) + "°");
-    digitalWrite(LED, HIGH);
+    #ifdef USE_LED
+        digitalWrite(LED, HIGH);
+    #endif
     stepper.enable();
     stepper.rotate(DEG_FOR_FEED); 
     delay(300);
     stepper.rotate(-DEG_FOR_RETRACTION);
     stepper.disable();
-    digitalWrite(LED, LOW);
+    #ifdef USE_LED
+        digitalWrite(LED, LOW);
+    #endif
     FEED = false;
     Serial.println("Feed end\n\n");
 }
