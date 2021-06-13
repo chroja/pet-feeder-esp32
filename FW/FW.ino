@@ -1,16 +1,25 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
+
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 
-#include "DRV8825.h" //https://github.com/laurb9/StepperDriver
+#include "STSPIN820.h" //https://github.com/laurb9/StepperDriver
+
  
 const char* ssid = "Asus 2,4GHz";
 const char* password = "cirozjundrova";
 
-#define USE_LED
+const char* PARAM_INPUT_1 = "FEED";
+const char* PARAM_INPUT_2 = "state";
+
+//#define USE_LED
+#define USE_WIFI
+
 
 //pin
 #ifdef USE_LED
@@ -18,64 +27,125 @@ const char* password = "cirozjundrova";
 #endif
 const int BTN = 4;
 const int BEEPER = 16;
-const int MODE0 = 17;
+
+const int MODE0 = 19;
 const int MODE1 = 18;
-const int MODE2 = 19;
+const int MODE2 = 15;
+
 const int EN = 21;
 const int DIR = 22;
 const int STEP = 23;
 
 // var
 int MOTOR_STEPS = 200;
-int MICROSTEP = 16;
-int RPM = 50;
+int MICROSTEP = 256;
+int RPM = 10;
 int MICROSTEP_PER_REV;
 
 int DEG_FOR_FEED;
-int DEG_FOR_FEED_MIN = 60;
-int DEG_FOR_FEED_MAX = 360;
+int DEG_FOR_FEED_MIN = 60;//60
+int DEG_FOR_FEED_MAX = 360;//360
 int FEED_BEEP = 300;
-int DEG_FOR_RETRACTION = 10;
+int DEG_FOR_RETRACTION = 20;
+
 
 bool BTN_STATE = 1;
 bool PREV_BTN_STATE = BTN_STATE;
 bool FEED = false;
 
-DRV8825 stepper(MOTOR_STEPS, DIR, STEP, EN, MODE0, MODE1, MODE2);
-WebServer server(80);
 
-void zpravaHlavni() {
-    String zprava;
-    zprava += "<!DOCTYPE html><html>";
-    zprava += "<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
-    zprava += "<body><h1><a href=\"/feed\"\">FEED</a></h1><br><br>";
-    zprava += "</body></html>";
-    
-    // vytištění zprávy se statusem 200 - OK
-    server.send(200, "text/html", zprava);
+STSPIN820 stepper(MOTOR_STEPS, DIR, STEP, EN, MODE0, MODE1, MODE2);
+#ifdef USE_WIFI
+    AsyncWebServer server(80);
+#endif
+
+#ifdef USE_WIFI
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ESP Web Server</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <style>
+    html {font-family: Arial; display: inline-block; text-align: center;}
+    h2 {font-size: 3.0rem;}
+    p {font-size: 3.0rem;}
+    body {max-width: 600px; margin:0px auto; padding-bottom: 25px;}
+    .switch {position: relative; display: inline-block; width: 120px; height: 68px} 
+    .switch input {display: none}
+    .slider {position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 34px}
+    .slider:before {position: absolute; content: ""; height: 52px; width: 52px; left: 8px; bottom: 8px; background-color: #fff; -webkit-transition: .4s; transition: .4s; border-radius: 68px}
+    input:checked+.slider {background-color: #2196F3}
+    input:checked+.slider:before {-webkit-transform: translateX(52px); -ms-transform: translateX(52px); transform: translateX(52px)}
+  </style>
+</head>
+<body>
+  <h2>ESP Web Server</h2>
+  %BUTTONPLACEHOLDER%
+<script>function toggleCheckbox(element) {
+  var xhr = new XMLHttpRequest();
+  console.log(xhr);
+  if(element.checked){ xhr.open("GET", "/update?state=1", true); }
+  else { xhr.open("GET", "/update?state=0", true); }
+  xhr.send();
 }
-void zpravaNeznamy() {
-  // vytvoření zprávy s informací o neexistujícím odkazu
-  // včetně metody a zadaného argumentu
-  String zprava = "Neexistujici odkaz\n\n";
-  zprava += "URI: ";
-  zprava += server.uri();
-  zprava += "\nMetoda: ";
-  zprava += (server.method() == HTTP_GET) ? "GET" : "POST";
-  zprava += "\nArgumenty: ";
-  zprava += server.args();
-  zprava += "\n";
-  for (uint8_t i = 0; i < server.args(); i++) {
-    zprava += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+
+setInterval(function ( ) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      var inputChecked;
+      var outputStateM;
+      if( this.responseText == 1){ 
+        inputChecked = true;
+        outputStateM = "On";
+      }
+      else { 
+        inputChecked = false;
+        outputStateM = "Off";
+      }
+      document.getElementById("FEED").checked = inputChecked;
+      document.getElementById("outputState").innerHTML = outputStateM;
+    }
+  };
+  xhttp.open("GET", "/state", true);
+  xhttp.send();
+}, 1000 ) ;
+</script>
+</body>
+</html>
+)rawliteral";
+
+// Replaces placeholder with button section in your web page
+String processor(const String& var){
+  //Serial.println(var);
+  if(var == "BUTTONPLACEHOLDER"){
+    String buttons ="";
+    String outputStateValue = outputState();
+    buttons+= "<h4>Feed - State <span id=\"outputState\"></span></h4><label class=\"switch\"><input type=\"checkbox\" onchange=\"toggleCheckbox(this)\" id=\"FEED\" " + outputStateValue + "><span class=\"slider\"></span></label>";
+    return buttons;
   }
-  // vytištění zprávy se statusem 404 - Nenalezeno
-  server.send(404, "text/plain", zprava);
+  return String();
 }
+
+String outputState(){
+  if(FEED){
+    return "checked";
+  }
+  else {
+    return "";
+  }
+  return "";
+}
+    
+#endif
 
 void setup (){
     Serial.begin(115200);
     Serial.println("\nSetup begin\n\n");
-    pinMode(LED, OUTPUT);
+    #ifdef USE_LED
+        pinMode(LED, OUTPUT);
+    #endif
     pinMode(BTN,  INPUT_PULLUP);
     pinMode(BEEPER,  OUTPUT);
     pinMode(MODE0,  OUTPUT);
@@ -86,15 +156,16 @@ void setup (){
     pinMode(STEP,  OUTPUT);
     Serial.println(digitalRead(BTN));
 
-    Serial.print("Connecting to ");
-    Serial.println(ssid);
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-
-    // Port defaults to 3232
+    #ifdef USE_WIFI
+        Serial.print("Connecting to ");
+        Serial.println(ssid);
+        WiFi.begin(ssid, password);
+        while (WiFi.status() != WL_CONNECTED) {
+            delay(500);
+            Serial.print(".");
+        }
+  
+      // Port defaults to 3232
     // ArduinoOTA.setPort(3232);
 
     // Hostname defaults to esp3232-[MAC]
@@ -134,29 +205,52 @@ void setup (){
         });
 
     ArduinoOTA.begin();
+  
+  
+        // Print local IP address and start web server
+        Serial.println("");
+        Serial.println("WiFi connected.");
+        Serial.println("IP address: ");
+        Serial.println(WiFi.localIP());
 
 
-    // Print local IP address and start web server
-    Serial.println("");
-    Serial.println("WiFi connected.");
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
-    if (MDNS.begin("pet_feeder")) {
-        Serial.println("MDNS responder turn on.");
-    }
-    server.on("/", zpravaHlavni);
-    server.on("/feed", []() {
-        FEED = true;
-        Serial.println("feed turned on");
-        // vytištění hlavní stránky
-        zpravaHlavni();
-    });
-    server.onNotFound(zpravaNeznamy);
-    // zahájení aktivity HTTP serveru
-    server.begin();
-    Serial.println("HTTP server je zapnuty.");
+          // Route for root / web page
+        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+            request->send_P(200, "text/html", index_html, processor);
+        });
+
+        // Send a GET request to <ESP_IP>/update?state=<inputMessage>
+        server.on("/update", HTTP_GET, [] (AsyncWebServerRequest *request) {
+            String inputMessage;
+            String inputParam;
+            // GET input1 value on <ESP_IP>/update?state=<inputMessage>
+            if (request->hasParam(PARAM_INPUT_1)) {
+            inputMessage = request->getParam(PARAM_INPUT_1)->value();
+            inputParam = PARAM_INPUT_1;
+                
+            FEED = !FEED;//inputParam.toInt();
+                
+            }
+            else {
+            inputMessage = "No message sent";
+            inputParam = "none";
+            }
+            Serial.println(inputMessage);
+            request->send(200, "text/plain", "OK");
+        });
+
+        // Send a GET request to <ESP_IP>/state
+        server.on("/state", HTTP_GET, [] (AsyncWebServerRequest *request) {
+            request->send(200, "text/plain", String(FEED).c_str());
+        });
+
+        // Start server
+        server.begin();
+    #endif
 
     SetupStepper(RPM, MICROSTEP);
+    Serial.println("mode 0: " + String(digitalRead(MODE0)) + "\nmode 1: " + String(digitalRead(MODE1)) + "\nmode 2: " + String(digitalRead(MODE2)));
+
     Beep(100);
     FEED = false;
     Serial.println("\nSetup end\n");
@@ -167,8 +261,14 @@ void setup (){
 
 
 void loop (){
+
     ArduinoOTA.handle();
-    server.handleClient();
+    
+    #ifdef USE_WIFI
+        //server.handleClient();
+    #endif
+
+
     BtnRead();
     if (FEED) Feed ();
 
@@ -183,7 +283,7 @@ void Beep (int lenght){
 }
 
 void SetupStepper(int rpm, int microstep){
-    stepper.setEnableActiveState(LOW);
+    //stepper.setEnableActiveState(LOW);
     stepper.enable();
     stepper.begin(rpm);
     stepper.setMicrostep(microstep);
@@ -232,4 +332,6 @@ void BtnRead(){
         }   
     }
     PREV_BTN_STATE = BTN_STATE;
+
 }
+
