@@ -1,3 +1,11 @@
+#include <A4988.h>
+#include <BasicStepperDriver.h>
+#include <DRV8825.h>
+#include <DRV8834.h>
+#include <DRV8880.h>
+#include <MultiDriver.h>
+#include <SyncDriver.h>
+
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WebServer.h>
@@ -5,7 +13,13 @@
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 
-#include "DRV8825.h" //https://github.com/laurb9/StepperDriver
+//#include  "BasicStepperDriver.h" // "STSPIN820.h" //https://github.com/laurb9/StepperDriver
+
+#include "DRV8825.h"
+// #define MODE0 10
+// #define MODE1 11
+// #define MODE2 12
+// DRV8825 stepper(MOTOR_STEPS, DIR, STEP, SLEEP, MODE0, MODE1, MODE2);
  
 const char* ssid = "Asus 2,4GHz";
 const char* password = "cirozjundrova";
@@ -41,7 +55,11 @@ bool BTN_STATE = 1;
 bool PREV_BTN_STATE = BTN_STATE;
 bool FEED = false;
 
-DRV8825 stepper(MOTOR_STEPS, DIR, STEP, EN, MODE0, MODE1, MODE2);
+//STSPIN820 stepper(MOTOR_STEPS, DIR, STEP, EN, MODE0, MODE1, MODE2);
+//BasicStepperDriver stepper(MOTOR_STEPS, DIR, STEP);
+DRV8825 stepper(MOTOR_STEPS, DIR, STEP, MODE0, MODE1, MODE2);
+
+
 WebServer server(80);
 
 void zpravaHlavni() {
@@ -101,7 +119,7 @@ void setup (){
     ArduinoOTA.setHostname("pet_feeder");
 
     // No authentication by default
-    // ArduinoOTA.setPassword("admin");
+     ArduinoOTA.setPassword("feed");
 
     // Password can be set with it's md5 value as well
     // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
@@ -183,7 +201,7 @@ void Beep (int lenght){
 }
 
 void SetupStepper(int rpm, int microstep){
-    stepper.setEnableActiveState(LOW);
+    //stepper.setEnableActiveState(LOW);
     stepper.enable();
     stepper.begin(rpm);
     stepper.setMicrostep(microstep);

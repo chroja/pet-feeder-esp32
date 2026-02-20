@@ -1,0 +1,64 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Arduino: Verify (compile)",
+            "type": "shell",
+            "command": "C:\\Program Files\\Arduino IDE\\resources\\app\\lib\\backend\\resources\\arduino-cli.exe",
+            "args": [
+                "compile",
+                "--fqbn", "esp32:esp32:esp32",
+                "--build-property", "build.partitions=default",
+                "--warnings", "default",
+                "${workspaceFolder}\\FW\\petfw_zaloha\\petfw_zaloha.ino"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Arduino: Upload",
+            "type": "shell",
+            "command": "C:\\Program Files\\Arduino IDE\\resources\\app\\lib\\backend\\resources\\arduino-cli.exe",
+            "args": [
+                "upload",
+                "--fqbn", "esp32:esp32:esp32",
+                "--port", "COM9",
+                "${workspaceFolder}\\FW\\petfw_zaloha\\petfw_zaloha.ino"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Arduino: Compile & Upload",
+            "type": "shell",
+            "command": "C:\\Program Files\\Arduino IDE\\resources\\app\\lib\\backend\\resources\\arduino-cli.exe",
+            "args": [
+                "compile",
+                "--fqbn", "esp32:esp32:esp32",
+                "--upload",
+                "--port", "COM9",
+                "${workspaceFolder}\\FW\\petfw_zaloha\\petfw_zaloha.ino"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

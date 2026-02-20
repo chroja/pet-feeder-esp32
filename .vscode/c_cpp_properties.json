@@ -1,19 +1,30 @@
 {
     "configurations": [
         {
-            "name": "Win32",
+            "name": "ESP32",
             "includePath": [
+                "${workspaceFolder}/**",
+                "C:\\Users\\janch\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\2.0.17\\cores\\esp32",
+                "C:\\Users\\janch\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\2.0.17\\variants\\esp32",
+                "C:\\Users\\janch\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\2.0.17\\libraries\\**",
+                "C:\\Users\\janch\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\2.0.17\\tools\\sdk\\esp32\\include\\**",
+                "C:\\Users\\janch\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\2.0.17\\tools\\sdk\\esp32\\qio_qspi\\include",
+                "C:\\Users\\janch\\AppData\\Local\\Arduino15\\packages\\esp32\\tools\\**",
                 "C:\\Users\\janch\\Documents\\Arduino\\libraries\\**",
-                "C:\\Program Files (x86)\\Arduino\\libraries\\**",
-                "C:\\Users\\janch\\Documents\\Arduino\\hardware\\espressif\\esp32\\**"
+                "C:/Users/janch/Documents/Arduino/libraries/U8g2/src",
+                "C:/Users/janch/Documents/Arduino/libraries/Adafruit_INA219",
+                "C:/Users/janch/Documents/Arduino/libraries/Adafruit_NeoPixel",
+                "C:/Users/janch/Documents/Arduino/libraries/Adafruit_BusIO"
             ],
-            "forcedInclude": [],
             "defines": [
-                "USBCON"
+                "ESP32",
+                "ARDUINO=10819",
+                "F_CPU=240000000L"
             ],
-            "intelliSenseMode": "windows-msvc-x64",
+            "compilerPath": "C:\\Users\\janch\\AppData\\Local\\Arduino15\\packages\\esp32\\tools\\xtensa-esp32-elf-gcc\\esp-2021r2-patch5-8.4.0\\bin\\xtensa-esp32-elf-gcc.exe",
             "cStandard": "c17",
-            "cppStandard": "c++17"
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64"
         }
     ],
     "version": 4

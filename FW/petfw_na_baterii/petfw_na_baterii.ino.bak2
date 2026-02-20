@@ -1,0 +1,919 @@
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+#include <U8g2lib.h>
+#include <Adafruit_NeoPixel.h>
+
+/* =================================================
+   FEATURE CONFIG
+================================================= */
+
+#define USE_MOTOR      1   // motor (pokud je kryt otevřený, motor nejede a svítí červená LED)
+#define USE_BEEPER     1   // bzučák pro signalizaci (např. konec nabíjení)
+#define USE_LED        1   // LED indikace stavu (stav baterie, rychlosti, hlasitosti, nabíjení, chyb)
+#define USE_DISPLAY    1   // OLED displej pro zobrazení napětí, proudu, výkonu, rychlosti, stavu nabíjení a chybových hlášení   
+#define USE_INA219     1   // měření napětí a proudu baterie pomocí INA219 (I2C adresa 0x40)
+#define USE_INA219_LED 0   // druhý INA219 (0x41) pro měření proudu LEDek
+#define USE_INPUT      1   // tlačítko
+#define USE_COVER      0   // snímač krytu (INPUT_PULLUP, HIGH=otevřeno) — vypni pokud není zapojen
+#define USE_POT        1   // potenciometry pro nastavení rychlosti a hlasitosti (nefungují při otevřeném krytu, protože motor nejede)
+#define USE_CHARGER    0   // nabíjení (CN3722 + CHARGE_ENABLE/DETECT piny)
+#define USE_NTC        0   // teplotní ochrana baterie při nabíjení
+#define USE_SELFTEST   1   // self-test při startu
+
+#define USE_I2C (USE_INA219 || USE_DISPLAY || USE_INA219_LED)
+
+
+/* =================================================
+   DEBUG CONFIG
+================================================= */
+
+#define DEBUG_LEVEL 3
+
+#define DBG_MOTOR   1
+#define DBG_LED     1
+#define DBG_BAT     1
+#define DBG_INPUT   1
+#define DBG_STALL   1
+#define DBG_DISPLAY 0
+
+#define DBG(level, group, msg) \
+  if(DEBUG_LEVEL >= level && group){ Serial.println(msg); }
+
+#define DBG2(level, group, msg, val) \
+  if(DEBUG_LEVEL >= level && group){ Serial.print(msg); Serial.println(val); }
+
+#define DBG3(level, group, msg) \
+  if(DEBUG_LEVEL >= level && group){ Serial.print(msg); }
+
+/* =================================================
+   PINY
+================================================= */
+
+#define RPWM 16
+#define R_EN 17
+#define LPWM 18
+#define L_EN 19
+
+#define BTN 13
+#define COVER 33
+
+#define POT_SPEED 25
+#define POT_BEEP 26
+
+#define BTN_INVERT 1   // RF přijímač: výstup HIGH=příjem (aktivní), LOW=klid → invertujeme
+#define BEEPER 5
+#define NEO_PIN 27
+
+#define CHARGE_ENABLE_PIN 32   // OUTPUT — enable/disable CN3722
+#define CHARGE_DETECT_PIN 34   // INPUT ONLY — detekce připojeného zdroje (voltage divider)
+#define NTC_PIN           35   // INPUT ONLY ADC — NTC termistor na baterii
+
+/* =================================================
+   LED MAP
+================================================= */
+
+#define LED_BAT_COUNT 3
+#define LED_SPEED_COUNT 3
+#define LED_BEEP_COUNT 3
+#define LED_STATUS_COUNT 9
+
+#define LED_BAT_START 0
+#define LED_SPEED_START (LED_BAT_START + LED_BAT_COUNT)
+#define LED_BEEP_START  (LED_SPEED_START + LED_SPEED_COUNT)
+#define LED_STATUS_START (LED_BEEP_START + LED_BEEP_COUNT)
+
+#define NUM_PIXELS (LED_BAT_COUNT + LED_SPEED_COUNT + LED_BEEP_COUNT + LED_STATUS_COUNT)
+
+/* =================================================
+   CONFIG
+================================================= */
+
+#define MOTOR_INVERT_DIR 0   // 1 = invertovat směr motoru (pokud je motor zapojen obráceně)
+
+#define STALL_CURRENT 0.15
+#define REVERSE_TIME 500
+#define MAX_STALL_RETRIES 2
+
+#define BAT_FULL 16.8
+#define BAT_EMPTY 11.0
+
+#define BEEP_DURATION 200
+#define BEEP_FREQ     2000   // Hz — rezonanční frekvence pasivního bzučáku (KY-006=2kHz, jiné zkus 1-4kHz)
+
+#define INA219_LED_ADDR        0x41
+#define CHARGE_FULL_CURRENT    0.064   // A — konec nabíjení (0.02C pro 3200mAh)
+#define CHARGE_TEMP_MAX        45.0    // °C — max teplota při nabíjení
+#define NTC_BETA               3950    // beta koeficient NTC termistoru
+#define NTC_NOMINAL            10000   // jmenovitý odpor NTC při 25°C (10 kΩ)
+#define NTC_SERIES             10000   // sériový rezistor (10 kΩ)
+#define NTC_TEMP_NOMINAL       25.0    // referenční teplota NTC (°C)
+#define LED_TEST_MIN_CURRENT   0.180   // A — minimální delta proud pro průchozí LED test (18 LED × 10 mA)
+#define MOTOR_TEST_DURATION    50      // ms — délka testu motoru
+#define MOTOR_TEST_MIN_CURRENT 0.005   // A — minimální delta proud pro detekci motoru (měříme přírůstek oproti baseline)
+
+/* =================================================
+   OBJEKTY
+================================================= */
+
+#if USE_INA219
+Adafruit_INA219 ina219;
+bool inaOK=false;
+#endif
+
+#if USE_INA219_LED
+Adafruit_INA219 ina219led(INA219_LED_ADDR);
+bool inaLedOK=false;
+#endif
+
+#if USE_DISPLAY
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+#endif
+
+#if USE_LED
+Adafruit_NeoPixel pixels(NUM_PIXELS, NEO_PIN, NEO_GRB + NEO_KHZ800);
+#endif
+
+/* =================================================
+   STAV
+================================================= */
+
+float voltage=0;
+float current=0;
+float power=0;
+
+#if USE_INA219_LED
+float ledCurrent=0;
+#endif
+
+#if USE_NTC
+float ntcTemp=0;
+#endif
+
+bool errorState=false;
+char errorMsg[32] = "OK";
+
+#if USE_CHARGER
+enum ChargeState{
+  CHARGE_DISCONNECTED,
+  CHARGE_ACTIVE,
+  CHARGE_FULL,
+  CHARGE_TEMP_ERROR
+};
+ChargeState chargeState=CHARGE_DISCONNECTED;
+bool chargeFull_signaled=false;
+#endif
+
+#if USE_MOTOR
+unsigned long stallTimer=0;
+unsigned long reverseStart=0;
+int stallRetryCount=0;
+
+enum MotorState{
+  MOTOR_IDLE,
+  MOTOR_FORWARD,
+  MOTOR_REVERSE_RETRY,
+  MOTOR_ERROR
+};
+
+MotorState motorState=MOTOR_IDLE;
+#endif
+
+#if USE_BEEPER
+const int pwmChanBeep=2;
+unsigned long beepStart=0;
+bool beepActive=false;
+bool prevBtnPressed=false;
+#endif
+
+/* =================================================
+   MOTOR
+================================================= */
+#if USE_MOTOR
+
+int pwmChanR = 0;
+int pwmChanL = 1;
+
+void motorStop()
+{
+  DBG(1,DBG_MOTOR,"Motor STOP");
+  ledcWrite(pwmChanR,0);
+  ledcWrite(pwmChanL,0);
+  digitalWrite(R_EN,LOW);
+  digitalWrite(L_EN,LOW);
+}
+
+void motorRun(bool forward,int percent)
+{
+  int pwm=map(percent,0,100,0,255);
+
+#if MOTOR_INVERT_DIR
+  forward=!forward;
+#endif
+
+  DBG2(2,DBG_MOTOR, forward?"Motor FWD ":"Motor REV ", percent);
+  digitalWrite(R_EN,HIGH);
+  digitalWrite(L_EN,HIGH);
+
+  if(forward){
+    ledcWrite(pwmChanR,pwm);
+    ledcWrite(pwmChanL,0);
+  }else{
+    ledcWrite(pwmChanL,pwm);
+    ledcWrite(pwmChanR,0);
+  }
+}
+
+void handleMotorState(int speedPercent,bool btnPressed)
+{
+  switch(motorState){
+
+    case MOTOR_IDLE:
+      if(btnPressed && !errorState){
+        stallRetryCount=0;
+        stallTimer=0;
+        Serial.println("\n>>> BTN PRESSED — START FEEDING");
+        motorRun(true,speedPercent);
+        motorState=MOTOR_FORWARD;
+      }
+      break;
+
+    case MOTOR_FORWARD:
+
+      if(!btnPressed){
+        motorStop();
+        motorState=MOTOR_IDLE;
+        Serial.println("BTN released — STOP FEEDING\n");
+        break;
+      }
+
+      // Průběžný výpis stavu krmení
+      {
+        static unsigned long feedPrintT=0;
+        if(millis()-feedPrintT>=300){
+          feedPrintT=millis();
+          Serial.print("  feeding... spd=");
+          Serial.print(speedPercent);
+          Serial.print("%");
+#if USE_INA219
+          if(inaOK){
+            Serial.print("  I="); Serial.print(current,3); Serial.print("A");
+          }
+#endif
+          Serial.println();
+        }
+      }
+
+      if(current>STALL_CURRENT && speedPercent>20){
+
+        if(stallTimer==0){
+          stallTimer=millis();
+          Serial.print("  ! STALL detected (I=");
+          Serial.print(current,3);
+          Serial.println("A) ...");
+        }
+
+        if(millis()-stallTimer>300){
+          motorStop();
+          stallRetryCount++;
+          Serial.print("  ! STALL confirmed -> reverse retry ");
+          Serial.print(stallRetryCount); Serial.print("/"); Serial.println(MAX_STALL_RETRIES);
+          motorRun(false,40);
+          reverseStart=millis();
+          motorState=MOTOR_REVERSE_RETRY;
+        }
+
+      }else stallTimer=0;
+
+      break;
+
+    case MOTOR_REVERSE_RETRY:
+      {
+        static bool revPrinted=false;
+        if(!revPrinted){ Serial.println("  reversing..."); revPrinted=true; }
+
+        if(millis()-reverseStart>REVERSE_TIME){
+          revPrinted=false;
+          motorStop();
+
+          if(stallRetryCount>=MAX_STALL_RETRIES){
+            errorState=true;
+            strcpy(errorMsg,"Feeding error");
+            motorState=MOTOR_ERROR;
+            Serial.println("!!! MOTOR ERROR: max retries exceeded");
+          }else{
+            Serial.println("  resuming forward...");
+            motorRun(true,speedPercent);
+            motorState=MOTOR_FORWARD;
+          }
+        }
+      }
+      break;
+
+    case MOTOR_ERROR:
+      motorStop();
+      break;
+  }
+}
+#endif
+
+/* =================================================
+   LED
+================================================= */
+#if USE_LED
+
+void drawBarLED(int start,int count,int level,uint32_t color)
+{
+  if(level > count) level = count;
+
+  for(int i=0;i<count;i++){
+    int idx=start+i;
+    if(idx>=NUM_PIXELS) return;
+
+    if(i<level) pixels.setPixelColor(idx,color);
+    else pixels.setPixelColor(idx,0);
+  }
+}
+
+void updateBatteryLED(float v)
+{
+  float percent=(v-BAT_EMPTY)/(BAT_FULL-BAT_EMPTY);
+  percent=constrain(percent,0,1);
+
+  int level=round(percent*LED_BAT_COUNT);
+
+  uint32_t color;
+
+  if(percent>0.6) color=pixels.Color(0,255,0);
+  else if(percent>0.3) color=pixels.Color(255,150,0);
+  else color=pixels.Color(255,0,0);
+
+  drawBarLED(LED_BAT_START,LED_BAT_COUNT,level,color);
+}
+
+void updatePotLED(int percent,int start,int count)
+{
+  int level=percent/(100/count);
+  drawBarLED(start,count,level,pixels.Color(0,0,255));
+}
+
+void updateStatusLED()
+{
+#if USE_CHARGER
+  static unsigned long chargeAnimT=0;
+  static int chargeAnimLevel=0;
+
+  if(chargeState==CHARGE_ACTIVE){
+    if(millis()-chargeAnimT>800){
+      chargeAnimT=millis();
+      chargeAnimLevel=(chargeAnimLevel+1)%(LED_STATUS_COUNT+1);
+    }
+    drawBarLED(LED_STATUS_START,LED_STATUS_COUNT,chargeAnimLevel,pixels.Color(0,0,200));
+    return;
+  }
+
+  if(chargeState==CHARGE_FULL){
+    drawBarLED(LED_STATUS_START,LED_STATUS_COUNT,LED_STATUS_COUNT,pixels.Color(0,255,0));
+    return;
+  }
+
+  if(chargeState==CHARGE_TEMP_ERROR){
+    static unsigned long blinkT=0;
+    static bool blinkOn=false;
+    if(millis()-blinkT>300){ blinkT=millis(); blinkOn=!blinkOn; }
+    drawBarLED(LED_STATUS_START,LED_STATUS_COUNT,
+               blinkOn?LED_STATUS_COUNT:0,pixels.Color(255,50,0));
+    return;
+  }
+#endif
+
+  uint32_t color=errorState ?
+    pixels.Color(255,0,0) :
+    pixels.Color(0,255,0);
+
+  drawBarLED(LED_STATUS_START,LED_STATUS_COUNT,
+             LED_STATUS_COUNT,color);
+}
+#endif
+
+/* =================================================
+   DISPLAY
+================================================= */
+#if USE_DISPLAY
+void updateDisplay(int speed,int beep)
+{
+  u8g2.clearBuffer();
+
+  u8g2.setCursor(0,10);  u8g2.print("U:"); u8g2.print(voltage,1); u8g2.print("V");
+#if USE_NTC
+  u8g2.setCursor(68,10); u8g2.print("T:"); u8g2.print(ntcTemp,1);
+#endif
+
+  u8g2.setCursor(0,20);  u8g2.print("I:"); u8g2.print(current,3); u8g2.print("A");
+  u8g2.setCursor(0,30);  u8g2.print("P:"); u8g2.print(power,2);   u8g2.print("W");
+
+  u8g2.setCursor(0,40);  u8g2.print("Spd:"); u8g2.print(speed);
+  u8g2.setCursor(68,40); u8g2.print("Bp:"); u8g2.print(beep);
+
+#if USE_CHARGER
+  u8g2.setCursor(0,50);
+  switch(chargeState){
+    case CHARGE_DISCONNECTED: u8g2.print("CHG:--");       break;
+    case CHARGE_ACTIVE:       u8g2.print("CHG:charging"); break;
+    case CHARGE_FULL:         u8g2.print("CHG:FULL");     break;
+    case CHARGE_TEMP_ERROR:   u8g2.print("CHG:TEMP ERR"); break;
+  }
+#endif
+
+#if USE_MOTOR
+  u8g2.setCursor(0,60);
+  u8g2.print(errorMsg);
+#elif !USE_CHARGER
+  u8g2.setCursor(0,60);
+  u8g2.print(errorMsg);
+#endif
+
+  u8g2.sendBuffer();
+}
+#endif
+
+/* =================================================
+   INPUT
+================================================= */
+#if USE_INPUT
+bool readButton()
+{
+  bool pressed=(digitalRead(BTN)==LOW);
+  if(BTN_INVERT) pressed=!pressed;
+  return pressed;
+}
+#endif
+
+/* =================================================
+   POT
+================================================= */
+int getStepPercent(int adc)
+{
+  int step=map(adc,0,4095,0,5);
+  return step*20;
+}
+
+/* =================================================
+   NTC
+================================================= */
+#if USE_NTC
+float readNTCtemp()
+{
+  int adc=analogRead(NTC_PIN);
+  if(adc<=0) return -99.0;
+  float r=NTC_SERIES*((4095.0/adc)-1.0);
+  float t=log(r/NTC_NOMINAL)/(float)NTC_BETA + 1.0/(NTC_TEMP_NOMINAL+273.15);
+  return 1.0/t - 273.15;
+}
+#endif
+
+/* =================================================
+   SELFTEST
+================================================= */
+#if USE_SELFTEST
+
+bool i2cProbe(uint8_t addr)
+{
+  Wire.beginTransmission(addr);
+  return Wire.endTransmission()==0;
+}
+
+#define ST_R(v) ((v)<0?"--":((v)?"OK":"ER"))
+
+#if USE_DISPLAY
+void showSelfTestDisplay(
+  int inaOk, int inaLedOk,
+  int batOk, int motorOk, int ledOk,
+  int btnOk, int coverOk, int potOk)
+{
+  u8g2.clearBuffer();
+  u8g2.setCursor(0,10);  u8g2.print("-- SELF TEST --");
+  u8g2.setCursor(0,20);  u8g2.print("INA:"); u8g2.print(ST_R(inaOk));
+  u8g2.setCursor(56,20); u8g2.print("LED:"); u8g2.print(ST_R(inaLedOk));
+  u8g2.setCursor(0,30);  u8g2.print("Bat:"); u8g2.print(ST_R(batOk));
+  u8g2.setCursor(56,30); u8g2.print("Mot:"); u8g2.print(ST_R(motorOk));
+  u8g2.setCursor(0,40);  u8g2.print("BTN:"); u8g2.print(ST_R(btnOk));
+  u8g2.setCursor(56,40); u8g2.print("CVR:"); u8g2.print(ST_R(coverOk));
+  u8g2.setCursor(0,50);  u8g2.print("POT:"); u8g2.print(ST_R(potOk));
+  u8g2.setCursor(56,50); u8g2.print("LED:"); u8g2.print(ST_R(ledOk));
+  u8g2.sendBuffer();
+}
+#endif
+
+void runSelfTest()
+{
+  Serial.println("\n=== SELF TEST ===");
+
+  int r_ina=-1, r_inaLed=-1;
+  int r_bat=-1, r_motor=-1, r_led=-1;
+  int r_btn=-1, r_cover=-1, r_pot=-1;
+  bool anyError=false;
+  bool coverOpen=false;
+
+  // 1. I2C scan
+#if USE_I2C
+  r_ina    = i2cProbe(0x40) ? 1 : 0;
+  r_inaLed = i2cProbe(INA219_LED_ADDR) ? 1 : 0;
+  bool dispFound = i2cProbe(0x3C) || i2cProbe(0x3D);
+  Serial.print("INA219 bat  (0x40): "); Serial.println(r_ina    ?"OK":"FAIL");
+  Serial.print("INA219 LED  (0x41): "); Serial.println(r_inaLed ?"OK":"not found");
+  Serial.print("Display (0x3C/3D):  "); Serial.println(dispFound?"OK":"FAIL");
+  if(!r_ina){ anyError=true; }
+#endif
+
+  // 2. Napětí baterie
+#if USE_INA219
+  if(inaOK){
+    float v=ina219.getBusVoltage_V();
+    r_bat=(v>=BAT_EMPTY && v<=BAT_FULL) ? 1 : 0;
+    Serial.print("Battery voltage: "); Serial.print(v,2);
+    Serial.print("V -> "); Serial.println(r_bat?"OK":"OUT OF RANGE");
+    if(!r_bat) anyError=true;
+  }
+#endif
+
+  // 3. Tlačítko
+#if USE_INPUT
+  bool btnAtBoot=readButton();
+  r_btn=btnAtBoot ? 0 : 1;
+  Serial.print("Button at boot: ");
+  Serial.println(btnAtBoot?"PRESSED (stuck?)":"OK");
+  if(btnAtBoot) anyError=true;
+#endif
+
+  // 4. Kryt
+#if USE_COVER
+  coverOpen=(digitalRead(COVER)==HIGH);
+  r_cover=coverOpen ? 0 : 1;
+  Serial.print("Cover: ");
+  Serial.println(coverOpen?"OPEN":"closed OK");
+  if(coverOpen) anyError=true;
+#else
+  r_cover=1; // snímač nezapojen — považujeme za zavřený
+  Serial.println("Cover: skipped (USE_COVER=0)");
+#endif
+
+  // 5. Potenciometry
+#if USE_POT
+  int potS=analogRead(POT_SPEED);
+  int potB=analogRead(POT_BEEP);
+  bool potFail=(potS<=10||potS>=4085)||(potB<=10||potB>=4085);
+  r_pot=1; // poty jsou jen warning, nenastavujeme chybu
+  Serial.print("POT_SPEED:"); Serial.print(potS);
+  Serial.print("  POT_BEEP:"); Serial.println(potB);
+  if(potFail) Serial.println("POT: WARNING — possibly stuck at rail (not wired?)");
+#endif
+
+  // 6. Motor test — měří delta proudu oproti baseline (eliminuje LED + systém)
+#if USE_MOTOR
+  float mBase=0;
+  #if USE_INA219
+  if(inaOK) mBase=ina219.getCurrent_mA()/1000.0;
+  #endif
+  Serial.print("Motor test baseline: "); Serial.print(mBase,3); Serial.println("A");
+  Serial.print("Motor test (300ms @ 80%)... ");
+  motorRun(true,80);
+  delay(MOTOR_TEST_DURATION);
+  float mCurrent=0, mDelta=0;
+  #if USE_INA219
+  if(inaOK){
+    mCurrent=ina219.getCurrent_mA()/1000.0;
+    mDelta=mCurrent-mBase;
+  }
+  #endif
+  motorStop();
+  Serial.print("total="); Serial.print(mCurrent,3);
+  Serial.print("A  delta="); Serial.print(mDelta,3); Serial.print("A -> ");
+  if(mDelta < MOTOR_TEST_MIN_CURRENT){
+    r_motor=0;
+    Serial.println("FAIL — motor pravdepodobne odpojen");
+    anyError=true;
+  } else if(mCurrent > STALL_CURRENT){
+    r_motor=0;
+    Serial.println("FAIL — stall proud uz pri startu");
+    anyError=true;
+  } else {
+    r_motor=1;
+    Serial.println("OK");
+  }
+#endif
+
+  // 7. LED test přes druhý INA219
+#if USE_LED && USE_INA219_LED
+  if(inaLedOK){
+    Serial.print("LED test (all white)... ");
+    float baseCurrent=ina219led.getCurrent_mA()/1000.0;
+    pixels.fill(pixels.Color(255,255,255));
+    pixels.show();
+    delay(80);
+    float onCurrent=ina219led.getCurrent_mA()/1000.0;
+    pixels.clear();
+    pixels.show();
+    float delta=onCurrent-baseCurrent;
+    r_led=(delta>=LED_TEST_MIN_CURRENT) ? 1 : 0;
+    Serial.print("delta="); Serial.print(delta,3);
+    Serial.println(r_led?"A — OK":"A — FAIL (low delta, LEDs missing?)");
+    if(!r_led) anyError=true;
+  }
+#endif
+
+  // 8. Beeper test
+#if USE_BEEPER
+  ledcWrite(pwmChanBeep,128);
+  delay(100);
+  ledcWrite(pwmChanBeep,0);
+  Serial.println("Beeper: test tone done");
+#endif
+
+  // Výsledky
+  Serial.println(anyError ? "=== SELF TEST: ERRORS ===" : "=== SELF TEST: PASS ===\n");
+
+#if USE_DISPLAY
+  showSelfTestDisplay(r_ina,r_inaLed,r_bat,r_motor,r_led,r_btn,r_cover,r_pot);
+  delay(2000);
+#endif
+
+  // Nastavit error state podle výsledku
+  if(coverOpen){
+    errorState=true;
+    strcpy(errorMsg,"Cover open");
+  } else if(anyError && r_motor==0){
+    errorState=true;
+    strcpy(errorMsg,"Motor error");
+  } else if(anyError && r_bat==0){
+    errorState=true;
+    strcpy(errorMsg,"Battery err");
+  }
+}
+#endif
+
+/* =================================================
+   CHARGER
+================================================= */
+#if USE_CHARGER
+
+#if USE_BEEPER
+void beepChargeFull()
+{
+  for(int i=0;i<3;i++){
+    ledcWrite(pwmChanBeep,128);  // 50% duty = max hlasitost
+    delay(150);
+    ledcWrite(pwmChanBeep,0);
+    delay(100);
+  }
+}
+#endif
+
+void handleChargeState()
+{
+  bool chargerPresent=(digitalRead(CHARGE_DETECT_PIN)==HIGH);
+
+  switch(chargeState){
+
+    case CHARGE_DISCONNECTED:
+      if(chargerPresent){
+        digitalWrite(CHARGE_ENABLE_PIN,HIGH);
+        chargeState=CHARGE_ACTIVE;
+        chargeFull_signaled=false;
+        DBG(1,DBG_BAT,"Charger connected — charging started");
+      }
+      break;
+
+    case CHARGE_ACTIVE:
+      if(!chargerPresent){
+        digitalWrite(CHARGE_ENABLE_PIN,LOW);
+        chargeState=CHARGE_DISCONNECTED;
+        DBG(1,DBG_BAT,"Charger disconnected");
+        break;
+      }
+#if USE_NTC
+      if(ntcTemp > CHARGE_TEMP_MAX){
+        digitalWrite(CHARGE_ENABLE_PIN,LOW);
+        errorState=true;
+        strcpy(errorMsg,"Charge temp!");
+        chargeState=CHARGE_TEMP_ERROR;
+        DBG(1,DBG_BAT,"Charging stopped: over temp");
+        break;
+      }
+#endif
+      if(voltage >= BAT_FULL-0.1 && abs(current) < CHARGE_FULL_CURRENT){
+        digitalWrite(CHARGE_ENABLE_PIN,LOW);
+        chargeState=CHARGE_FULL;
+        DBG(1,DBG_BAT,"Battery FULL");
+      }
+      break;
+
+    case CHARGE_FULL:
+      if(!chargerPresent){
+        chargeState=CHARGE_DISCONNECTED;
+        chargeFull_signaled=false;
+        DBG(1,DBG_BAT,"Charger removed after full");
+      }
+      break;
+
+    case CHARGE_TEMP_ERROR:
+      if(!chargerPresent){
+        chargeState=CHARGE_DISCONNECTED;
+        errorState=false;
+        strcpy(errorMsg,"OK");
+      }
+#if USE_NTC
+      else if(ntcTemp <= CHARGE_TEMP_MAX-5.0){
+        digitalWrite(CHARGE_ENABLE_PIN,HIGH);
+        chargeState=CHARGE_ACTIVE;
+        errorState=false;
+        strcpy(errorMsg,"OK");
+        DBG(1,DBG_BAT,"Charging resumed after cool-down");
+      }
+#endif
+      break;
+  }
+}
+#endif
+
+/* =================================================
+   SETUP
+================================================= */
+void setup()
+{
+  Serial.begin(115200);
+
+#if USE_INPUT
+  pinMode(BTN,INPUT_PULLUP);
+#endif
+#if USE_COVER
+  pinMode(COVER,INPUT_PULLUP);
+#endif
+
+#if USE_MOTOR
+  pinMode(R_EN,OUTPUT);
+  pinMode(L_EN,OUTPUT);
+
+  ledcSetup(pwmChanR,20000,8);
+  ledcSetup(pwmChanL,20000,8);
+
+  ledcAttachPin(RPWM,pwmChanR);
+  ledcAttachPin(LPWM,pwmChanL);
+#endif
+
+#if USE_BEEPER
+  ledcSetup(pwmChanBeep,BEEP_FREQ,8);
+  ledcAttachPin(BEEPER,pwmChanBeep);
+#endif
+
+#if USE_CHARGER
+  pinMode(CHARGE_ENABLE_PIN,OUTPUT);
+  digitalWrite(CHARGE_ENABLE_PIN,LOW);
+  pinMode(CHARGE_DETECT_PIN,INPUT);
+#endif
+
+#if USE_I2C
+  Wire.begin(21,22);
+#endif
+
+#if USE_INA219
+  inaOK=ina219.begin();
+#endif
+
+#if USE_INA219_LED
+  inaLedOK=ina219led.begin();
+#endif
+
+#if USE_DISPLAY
+  u8g2.begin();
+  u8g2.setFont(u8g2_font_6x10_tf);
+#endif
+
+#if USE_LED
+  pixels.begin();
+  pixels.clear();
+  pixels.show();
+#endif
+
+#if USE_SELFTEST
+  runSelfTest();
+#endif
+
+  DBG(1,1,"System init OK");
+}
+
+/* =================================================
+   LOOP
+================================================= */
+void loop()
+{
+
+#if USE_INA219
+  if(inaOK){
+    voltage=ina219.getBusVoltage_V();
+    current=ina219.getCurrent_mA()/1000.0;
+    power=voltage*current;
+  }
+#endif
+
+#if USE_INA219_LED
+  if(inaLedOK){
+    ledCurrent=ina219led.getCurrent_mA()/1000.0;
+  }
+#endif
+
+#if USE_NTC
+  ntcTemp=readNTCtemp();
+#endif
+
+#if USE_POT
+  int speed=getStepPercent(analogRead(POT_SPEED));
+  int beep=getStepPercent(analogRead(POT_BEEP));
+#else
+  int speed=0;
+  int beep=0;
+#endif
+
+#if USE_INPUT
+  bool btnPressed=readButton();
+  {
+    static bool prevBtnDbg=false;
+    if(btnPressed!=prevBtnDbg){
+      Serial.println(btnPressed ? "BTN: PRESSED" : "BTN: released");
+      prevBtnDbg=btnPressed;
+    }
+  }
+#else
+  bool btnPressed=false;
+#endif
+
+#if USE_BEEPER
+  if(btnPressed && !prevBtnPressed){
+    ledcWrite(pwmChanBeep,map(beep,0,100,0,128));  // pasivní bzučák: 128=50% duty=max hlasitost, 0=ticho
+    beepStart=millis();
+    beepActive=true;
+    Serial.print("BEEP: vol="); Serial.print(beep);
+    Serial.print("%  dur="); Serial.print(BEEP_DURATION); Serial.println("ms");
+  }
+  if(beepActive && millis()-beepStart>=BEEP_DURATION){
+    ledcWrite(pwmChanBeep,0);
+    beepActive=false;
+  }
+  prevBtnPressed=btnPressed;
+#endif
+
+#if USE_COVER
+  if(digitalRead(COVER)==HIGH){
+    errorState=true;
+    strcpy(errorMsg,"Cover open");
+  } else if(strcmp(errorMsg,"Cover open")==0){
+    errorState=false;
+    strcpy(errorMsg,"OK");
+  }
+#endif
+
+#if USE_CHARGER
+  handleChargeState();
+  #if USE_BEEPER
+  if(chargeState==CHARGE_FULL && !chargeFull_signaled){
+    chargeFull_signaled=true;
+    beepChargeFull();
+  }
+  #endif
+#endif
+
+#if USE_MOTOR
+  handleMotorState(speed,btnPressed);
+
+  // Výpis stavu čekání (každé 2s, jen v IDLE bez chyby)
+  if(motorState==MOTOR_IDLE){
+    static unsigned long waitT=0;
+    if(millis()-waitT>=2000){
+      waitT=millis();
+      Serial.print("[ waiting ]  spd="); Serial.print(speed); Serial.print("%");
+#if USE_INA219
+      if(inaOK){
+        Serial.print("  U="); Serial.print(voltage,1); Serial.print("V");
+        Serial.print("  I="); Serial.print(current,3); Serial.print("A");
+      }
+#endif
+      if(errorState){ Serial.print("  !! ERR: "); Serial.print(errorMsg); }
+      Serial.println();
+    }
+  }
+#endif
+
+#if USE_LED
+  pixels.clear();
+  updateBatteryLED(voltage);
+  updatePotLED(speed,LED_SPEED_START,LED_SPEED_COUNT);
+  updatePotLED(beep,LED_BEEP_START,LED_BEEP_COUNT);
+  updateStatusLED();
+  pixels.show();
+#endif
+
+#if USE_DISPLAY
+  updateDisplay(speed,beep);
+#endif
+
+  delay(100);
+}
